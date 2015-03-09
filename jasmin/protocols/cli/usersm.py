@@ -1,5 +1,6 @@
 import pickle
 import re
+from hashlib import md5
 from jasmin.protocols.cli.managers import Manager, Session
 from jasmin.protocols.cli.protocol import str2num
 from jasmin.routing.jasminApi import User, MtMessagingCredential, SmppsCredential, jasminApiCredentialError
@@ -12,10 +13,12 @@ MtMessagingCredentialKeyMap = {'class': 'MtMessagingCredential',
                                                   'dlr_level': 'set_dlr_level',
                                                   'http_dlr_method': 'http_set_dlr_method',
                                                   'src_addr': 'set_source_address',
-                                                  'priority': 'set_priority'},
+                                                  'priority': 'set_priority',
+                                                  'validity_period': 'set_validity_period'},
                                'ValueFilter': {'dst_addr': 'destination_address',
                                                 'src_addr': 'source_address',
                                                 'priority': 'priority',
+                                                'validity_period': 'validity_period',
                                                 'content': 'content'},
                                'DefaultValue': {'src_addr': 'source_address'},
                                'Quota': {'balance': 'balance',
@@ -174,7 +177,7 @@ def UserBuild(fCallback):
                 else:
                     # Buffer key for later User initiating
                     UserKey = UserKeyMap[cmd]
-                    self.sessBuffer[UserKey] = arg
+                    self.sessBuffer[UserKey] = str2num(arg)
             
             return self.protocol.sendData()
     return parse_args_and_call_with_instance
@@ -375,7 +378,10 @@ class UsersManager(Manager):
                     for SectionKey, SectionValue in update[1].iteritems():
                         getattr(subUserObject,  'set%s' % section)(SectionKey, SectionValue)
             else:
-                setattr(user, key, value)
+                if key == 'password':
+                    setattr(user, key, md5(value).digest())
+                else:
+                    setattr(user, key, value)
         
         self.protocol.sendData('Successfully updated User [%s]' % self.sessionContext['uid'], prompt=False)
         self.stopSession()

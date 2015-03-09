@@ -334,7 +334,7 @@ class SMPPClientSMListener:
                     hashValues = {'msgid': msgid, 
                                   'connector_type': 'httpapi',}
                     self.redisClient.set(hashKey, pickle.dumps(hashValues, self.pickleProtocol)).addCallback(
-                        self.setKeyExpiry, hashKey, smpps_map_expiry)
+                        self.setKeyExpiry, hashKey, dlr_expiry)
             elif pickledSmppsMap is not None:
                 self.log.debug('There is a SMPPs mapping for msgid[%s] ...' % (msgid))
 
@@ -361,7 +361,7 @@ class SMPPClientSMListener:
                                                  source_addr,
                                                  destination_addr)
 
-                    routing_key = 'dlr_thrower.smpp'
+                    routing_key = 'dlr_thrower.smpps'
                     self.log.debug("Publishing DLRContentForSmpps[%s] with routing_key[%s]" % (msgid, routing_key))
                     yield self.amqpBroker.publish(exchange='messaging', 
                                                   routing_key=routing_key, 
@@ -392,15 +392,16 @@ class SMPPClientSMListener:
                                           routing_key=pubQueueName, 
                                           content=content)
         
-        # Send back submit_sm_resp to submit.sm.resp.CID queue
-        # There's no actual listeners on this queue, it can be used to 
-        # track submit_sm_resp messages from a 3rd party app
-        content = SubmitSmRespContent(r.response, msgid, pickleProtocol = self.pickleProtocol)
-        self.log.debug("Sending back SubmitSmRespContent[%s] with routing_key[%s]" % 
-                       (msgid, amqpMessage.content.properties['reply-to']))
-        yield self.amqpBroker.publish(exchange='messaging', 
-                                      routing_key=amqpMessage.content.properties['reply-to'], 
-                                      content=content)
+        if self.config.publish_submit_sm_resp:
+            # Send back submit_sm_resp to submit.sm.resp.CID queue
+            # There's no actual listeners on this queue, it can be used to 
+            # track submit_sm_resp messages from a 3rd party app
+            content = SubmitSmRespContent(r.response, msgid, pickleProtocol = self.pickleProtocol)
+            self.log.debug("Sending back SubmitSmRespContent[%s] with routing_key[%s]" % 
+                           (msgid, amqpMessage.content.properties['reply-to']))
+            yield self.amqpBroker.publish(exchange='messaging', 
+                                          routing_key=amqpMessage.content.properties['reply-to'], 
+                                          content=content)
 
     def submit_sm_errback(self, error):
         """It appears that when closing a queue with the close() method it errbacks with
@@ -626,7 +627,7 @@ class SMPPClientSMListener:
                                                          source_addr,
                                                          destination_addr)
 
-                            routing_key = 'dlr_thrower.smpp'
+                            routing_key = 'dlr_thrower.smpps'
                             self.log.debug("Publishing DLRContentForSmpps[%s] with routing_key[%s]" % (submit_sm_queue_id, routing_key))
                             yield self.amqpBroker.publish(exchange='messaging', 
                                                           routing_key=routing_key, 
