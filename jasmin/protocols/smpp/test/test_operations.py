@@ -7,7 +7,7 @@ from twisted.trial.unittest import TestCase
 from jasmin.protocols.smpp.configs import SMPPClientConfig
 from jasmin.protocols.smpp.operations import SMPPOperationFactory, UnknownMessageStatusError
 from jasmin.vendor.smpp.pdu.pdu_types import CommandId, CommandStatus, MessageState
-from jasmin.vendor.smpp.pdu.operations import SubmitSM, DeliverSM
+from jasmin.vendor.smpp.pdu.operations import SubmitSM, DeliverSM, DataSM
 
 class OperationsTest(TestCase):
     def setUp(self):
@@ -131,7 +131,7 @@ class DeliveryParsingTest(OperationsTest):
         self.assertEquals(isDlr['err'], '000')
         self.assertEquals(isDlr['text'], '')
 
-    def test_is_delivery_clickatell(self):
+    def test_is_delivery_clickatell_70(self):
         """Related to #70
         Parsing clickatell's DLRs
         """
@@ -152,7 +152,7 @@ class DeliveryParsingTest(OperationsTest):
         self.assertEquals(isDlr['err'], '000')
         self.assertEquals(isDlr['text'], 'HOLA')
 
-    def test_is_delivery_jasmin(self):
+    def test_is_delivery_jasmin_153(self):
         """Related to #153
         Parsing jasmin's DLRs
         """
@@ -172,6 +172,68 @@ class DeliveryParsingTest(OperationsTest):
         self.assertEquals(isDlr['stat'], 'DELIVRD')
         self.assertEquals(isDlr['err'], '000')
         self.assertEquals(isDlr['text'], '-')
+
+    def test_is_delivery_jasmin_195(self):
+        """Related to #195
+        Mandatory fields in short_message are parsed and optional fields are set to defaults when
+        they dont exist in short_message"""
+        pdu = DeliverSM(
+            source_addr='1234',
+            destination_addr='4567',
+            short_message='id:c87c2273-7edb-4bc7-8d3a-7f57f21b625e submit date:201506201641 done date:201506201641 stat:DELIVRD err:000',
+        )
+        
+        isDlr = self.opFactory.isDeliveryReceipt(pdu)
+        self.assertTrue(isDlr is not None)
+        self.assertEquals(isDlr['id'], 'c87c2273-7edb-4bc7-8d3a-7f57f21b625e')
+        self.assertEquals(isDlr['sub'], 'ND')
+        self.assertEquals(isDlr['dlvrd'], 'ND')
+        self.assertEquals(isDlr['sdate'], '201506201641')
+        self.assertEquals(isDlr['ddate'], '201506201641')
+        self.assertEquals(isDlr['stat'], 'DELIVRD')
+        self.assertEquals(isDlr['err'], '000')
+        self.assertEquals(isDlr['text'], '')
+
+    def test_is_delivery_mmg_deliver_sm_224(self):
+        """Related to #224, this is a Sicap's MMG deliver_sm receipt"""
+        pdu = DeliverSM(
+            source_addr='21698700177',
+            destination_addr='JOOKIES',
+            short_message='362d9701 2',
+            message_state=MessageState.DELIVERED,
+            receipted_message_id='362d9701',
+        )
+        
+        isDlr = self.opFactory.isDeliveryReceipt(pdu)
+        self.assertTrue(isDlr is not None)
+        self.assertEquals(isDlr['id'], '362d9701')
+        self.assertEquals(isDlr['sub'], 'ND')
+        self.assertEquals(isDlr['dlvrd'], 'ND')
+        self.assertEquals(isDlr['sdate'], 'ND')
+        self.assertEquals(isDlr['ddate'], 'ND')
+        self.assertEquals(isDlr['stat'], 'DELIVRD')
+        self.assertEquals(isDlr['err'], 'ND')
+        self.assertEquals(isDlr['text'], '')
+
+    def test_is_delivery_mmg_data_sm_92(self):
+        """Related to #92, this is a Sicap's MMG data_sm receipt"""
+        pdu = DataSM(
+            source_addr='21698700177',
+            destination_addr='JOOKIES',
+            message_state=MessageState.DELIVERED,
+            receipted_message_id='362d9701',
+        )
+        
+        isDlr = self.opFactory.isDeliveryReceipt(pdu)
+        self.assertTrue(isDlr is not None)
+        self.assertEquals(isDlr['id'], '362d9701')
+        self.assertEquals(isDlr['sub'], 'ND')
+        self.assertEquals(isDlr['dlvrd'], 'ND')
+        self.assertEquals(isDlr['sdate'], 'ND')
+        self.assertEquals(isDlr['ddate'], 'ND')
+        self.assertEquals(isDlr['stat'], 'DELIVRD')
+        self.assertEquals(isDlr['err'], 'ND')
+        self.assertEquals(isDlr['text'], '')
 
 class ReceiptCreationTestCases(OperationsTest):
     message_state_map = {

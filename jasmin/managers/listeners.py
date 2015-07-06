@@ -1,11 +1,13 @@
 #pylint: disable-msg=W0401,W0611
+import re
 import logging
 import pickle
 import struct
+from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime, timedelta
 from dateutil import parser
 from twisted.internet import defer
-from jasmin.vendor.smpp.pdu.pdu_types import CommandStatus
+from jasmin.vendor.smpp.pdu.pdu_types import CommandStatus, CommandId
 from jasmin.vendor.smpp.pdu.operations import SubmitSM
 from jasmin.vendor.smpp.pdu.error import *
 from txamqp.queue import Closed
@@ -17,6 +19,42 @@ from jasmin.managers.configs import SMPPClientPBConfig
 from jasmin.protocols.smpp.operations import SMPPOperationFactory
 
 LOG_CATEGORY = "jasmin-sm-listener"
+
+def SubmitSmPDUUpdate(fCallback):
+    '''Will extract SubmitSmPDU and update it (if needed) then pass it to fCallback'''
+    def update_submit_sm_pdu(self, *args, **kwargs):
+        message = args[0]
+        SubmitSmPDU = pickle.loads(message.content.body)
+
+        if 'headers' in message.content.properties:
+            headers = message.content.properties['headers']
+            """SubmitSmPDU is sent through httpapi, in this case, some params that cannot be defined
+            through the api must be set here (from the connector config):"""
+            if 'source_connector' in headers and headers['source_connector'] == 'httpapi':
+                update_params = [
+                    'protocol_id', 
+                    'replace_if_present_flag', 
+                    'dest_addr_ton',
+                    'source_addr_npi',
+                    'dest_addr_npi',
+                    'service_type',
+                    'source_addr_ton',
+                    'sm_default_msg_id',
+                ]
+
+                for param in update_params:
+                    _pdu = SubmitSmPDU
+
+                    # Set param in main pdu
+                    _pdu.params[param] = getattr(self.SMPPClientFactory.config, param)
+
+                    # Set param in sub-pdus (multipart use case)
+                    while hasattr(_pdu, 'nextPdu'):
+                        _pdu = _pdu.nextPdu
+                        _pdu.params[param] = getattr(self.SMPPClientFactory.config, param)
+
+        return fCallback(self, message, SubmitSmPDU)
+    return update_submit_sm_pdu
 
 class SMPPClientSMListener:
     debug_it = {'rejectCount': 0}
@@ -44,7 +82,8 @@ class SMPPClientSMListener:
         self.log = logging.getLogger(LOG_CATEGORY)
         if len(self.log.handlers) != 1:
             self.log.setLevel(self.config.log_level)
-            handler = logging.FileHandler(filename=self.config.log_file)
+            handler = TimedRotatingFileHandler(filename=self.config.log_file, 
+                when = self.config.log_rotate)
             formatter = logging.Formatter(self.config.log_format, self.config.log_date_format)
             handler.setFormatter(formatter)
             self.log.addHandler(handler)
@@ -110,15 +149,15 @@ class SMPPClientSMListener:
     @defer.inlineCallbacks
     def ackMessage(self, message):
         yield self.amqpBroker.chan.basic_ack(message.delivery_tag)
-    
+
+    @SubmitSmPDUUpdate
     @defer.inlineCallbacks
-    def submit_sm_callback(self, message):
+    def submit_sm_callback(self, message, SubmitSmPDU):
         """This callback is a queue listener
         it is called whenever a message was consumed from queue
         c.f. test_amqp.ConsumeTestCase for use cases
         """
         msgid = message.content.properties['message-id']
-        SubmitSmPDU = pickle.loads(message.content.body)
 
         self.submit_sm_q.get().addCallback(self.submit_sm_callback).addErrback(self.submit_sm_errback)
 
@@ -183,14 +222,19 @@ class SMPPClientSMListener:
                 yield self.rejectMessage(message)
                 defer.returnValue(False)
             else:
-                self.log.error("SMPPC [cid:%s] is not connected: Requeuing (#%s) SubmitSmPDU[%s], aged %s seconds." % (
+                if self.config.submit_retrial_delay_smppc_not_ready != False:
+                    delay_str = ' with delay %s seconds' % self.config.submit_retrial_delay_smppc_not_ready
+                else:
+                    delay_str = ''
+                self.log.error("SMPPC [cid:%s] is not connected: Requeuing (#%s) SubmitSmPDU[%s]%s, aged %s seconds." % (
                     self.SMPPClientFactory.config.id, 
                     self.submit_retrials[msgid],
                     msgid,
+                    delay_str,
                     msgAge.seconds,
                     )
                 )
-                yield self.rejectAndRequeueMessage(message)
+                yield self.rejectAndRequeueMessage(message, delay = self.config.submit_retrial_delay_smppc_not_ready)
                 defer.returnValue(False)
         # SMPP Client should be already bound as transceiver or transmitter
         if self.SMPPClientFactory.smpp.isBound() is False:
@@ -207,14 +251,19 @@ class SMPPClientSMListener:
                 yield self.rejectMessage(message)
                 defer.returnValue(False)
             else:
-                self.log.error("SMPPC [cid:%s] is not bound: Requeuing (#%s) SubmitSmPDU[%s], aged %s seconds."% (
+                if self.config.submit_retrial_delay_smppc_not_ready != False:
+                    delay_str = ' with delay %s seconds' % self.config.submit_retrial_delay_smppc_not_ready
+                else:
+                    delay_str = ''
+                self.log.error("SMPPC [cid:%s] is not bound: Requeuing (#%s) SubmitSmPDU[%s]%s, aged %s seconds."% (
                     self.SMPPClientFactory.config.id, 
                     self.submit_retrials[msgid],
                     msgid,
+                    delay_str,
                     msgAge,
                     )
                 )
-                yield self.rejectAndRequeueMessage(message)
+                yield self.rejectAndRequeueMessage(message, delay = self.config.submit_retrial_delay_smppc_not_ready)
                 defer.returnValue(False)
 
         self.log.debug("Sending SubmitSmPDU through SMPPClientFactory")
@@ -292,7 +341,7 @@ class SMPPClientSMListener:
                                   else amqpMessage.content.properties['headers']['expiration'],
                            r.request.params['source_addr'],
                            r.request.params['destination_addr'],
-                           short_message
+                           re.sub(r'[^\x20-\x7E]+','.', short_message)
                            ))
         else:
             # Message must be retried ?
@@ -319,7 +368,7 @@ class SMPPClientSMListener:
                                   else amqpMessage.content.properties['headers']['expiration'],
                            r.request.params['source_addr'],
                            r.request.params['destination_addr'],
-                           r.request.params['short_message']
+                           re.sub(r'[^\x20-\x7E]+','.', r.request.params['short_message'])
                            ))
 
         # It is a final submit_sm_resp !
@@ -530,11 +579,38 @@ class SMPPClientSMListener:
             # 2. Set the new short_message
             pdu.params['short_message'] = short_message
             yield self.deliver_sm_event(smpp = None, pdu = pdu, concatenated = True)
+
+    def code_dlr_msgid(self, pdu):
+        "Code the dlr msg id accordingly to SMPPc's dlr_msg_id_bases value"
+
+        try:
+            if pdu.id == CommandId.deliver_sm:
+                if self.SMPPClientFactory.config.dlr_msg_id_bases == 1:
+                    ret = '%x' % int(pdu.dlr['id'])
+                elif self.SMPPClientFactory.config.dlr_msg_id_bases == 2:
+                    ret = int(str(pdu.dlr['id']), 16)
+                else:
+                    ret = pdu.dlr['id']
+            else:
+                # TODO: code dlr for submit_sm_resp maybe ? TBC
+                ret = pdu.dlr['id']
+        except Exception, e:
+            self.log.error('code_dlr_msgid, cannot code msgid [%s] with dlr_msg_id_bases:%s' % (
+                pdu.dlr['id'],
+                self.SMPPClientFactory.config.dlr_msg_id_bases,
+            ))
+            self.log.error('code_dlr_msgid, error details: %s' % e)
+            ret = pdu.dlr['id']
+
+        self.log.debug('code_dlr_msgid: %s coded to %s' % (pdu.dlr['id'], ret))
+        return ret
     
     @defer.inlineCallbacks
     def deliver_sm_event(self, smpp, pdu, concatenated = False):
         """This event is called whenever a deliver_sm pdu is received through a SMPPc
         It will hand the pdu to the router or a dlr thrower (depending if its a DLR or not).
+        
+        Note: this event will catch data_sm pdus as well
         """
 
         pdu.dlr =  self.SMPPOperationFactory.isDeliveryReceipt(pdu)
@@ -587,7 +663,7 @@ class SMPPClientSMListener:
                            pdu.params['validity_period'],
                            pdu.params['source_addr'],
                            pdu.params['destination_addr'],
-                           pdu.params['short_message']
+                           re.sub(r'[^\x20-\x7E]+','.', pdu.params['short_message'])
                            ))
             else:
                 # Long message part received
@@ -621,7 +697,9 @@ class SMPPClientSMListener:
             # This is a DLR !
             # Check for DLR request
             if self.redisClient is not None:
-                q = yield self.redisClient.get("queue-msgid:%s" % pdu.dlr['id'])
+                _coded_dlr_id = self.code_dlr_msgid(pdu)
+
+                q = yield self.redisClient.get("queue-msgid:%s" % _coded_dlr_id)
                 submit_sm_queue_id = None
                 connector_type = None
                 if q is not None:
@@ -649,7 +727,7 @@ class SMPPClientSMListener:
                                                  # of the actual delivery receipt (2) and not the 
                                                  # requested one (maybe 2 or 3)
                                                  dlr_level = 2, 
-                                                 id_smsc = pdu.dlr['id'], 
+                                                 id_smsc = _coded_dlr_id, 
                                                  sub = pdu.dlr['sub'], 
                                                  dlvrd = pdu.dlr['dlvrd'], 
                                                  subdate = pdu.dlr['sdate'], 
@@ -669,8 +747,8 @@ class SMPPClientSMListener:
                         else:
                             self.log.debug('SMS-C receipt is requested, will not send any DLR receipt at this level.')
                     else:
-                        self.log.warn('Got invalid DLR information for msgid[%s], url:%s, level:%s' % 
-                                      (submit_sm_queue_id, dlr_url, dlr_level))
+                        self.log.warn('DLR for msgid[%s] not found !' % 
+                                      (submit_sm_queue_id))
                 elif submit_sm_queue_id is not None and connector_type == 'smpps':
                     pickledSmppsMap = yield self.redisClient.get("smppsmap:%s" % submit_sm_queue_id)
                     
@@ -712,14 +790,14 @@ class SMPPClientSMListener:
                                 self.log.debug('Removing SMPPs map for msgid[%s]' % submit_sm_queue_id)
                                 yield self.redisClient.delete('smppsmap:%s' % submit_sm_queue_id)
                 else:
-                    self.log.warn('Got a DLR for an unknown message id: %s' % pdu.dlr['id'])
+                    self.log.warn('Got a DLR for an unknown message id: %s (coded:%s)' % (pdu.dlr['id'], _coded_dlr_id))
             else:
                 self.log.warn('DLR for msgid[%s] is not checked, no valid RC were found' % msgid)
 
             self.log.info("DLR [cid:%s] [smpp-msgid:%s] [status:%s] [submit date:%s] [done date:%s] [sub/dlvrd messages:%s/%s] [err:%s] [content:%s]" % 
                       (
                        self.SMPPClientFactory.config.id,
-                       pdu.dlr['id'],
+                       _coded_dlr_id,
                        pdu.dlr['stat'],
                        pdu.dlr['sdate'],
                        pdu.dlr['ddate'],

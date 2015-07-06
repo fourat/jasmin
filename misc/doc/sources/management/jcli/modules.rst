@@ -640,6 +640,9 @@ Adding a new SMPP Client connector requires knowledge of the parameters detailed
    * - **logfile**
      - 
      - /var/log/jasmin/default-**<cid>**.log
+   * - **logrotate**
+     - When to rotate the log file, possible values: S=Seconds, M=Minutes, H=Hours, D=Days, W0-W6=Weekday (0=Monday) and midnight=Roll over at midnight
+     - midnight
    * - **loglevel**
      - Logging numeric level: 10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICCAL 
      - 20
@@ -738,6 +741,9 @@ Adding a new SMPP Client connector requires knowledge of the parameters detailed
      - 0
    * - **ripf**
      - Replace if present flag: 0=Do not replace, 1=Replace
+     - 0
+   * - **dlr_msgid**
+     - Indicates how to read msg id when receiving a receipt: 0=msg id is identical in submit_sm_resp and deliver_sm, 1=submit_sm_resp msg-id is in hexadecimal base, deliver_sm msg-id is in decimal base, 2=submit_sm_resp msg-id is in decimal base, deliver_sm msg-id is in hexadecimal base.
      - 0
 
 .. note:: When adding a SMPP Client connector, only it's **cid** is required, all the other parameters will 

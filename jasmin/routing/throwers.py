@@ -1,7 +1,7 @@
 import pickle
 import logging
 import urllib
-import uuid
+from logging.handlers import TimedRotatingFileHandler
 from twisted.application.service import Service
 from twisted.internet import defer
 from twisted.web.client import getPage
@@ -35,7 +35,7 @@ class Thrower(Service):
         self.log_category = "abstract-thrower"
 
         self.exchangeName = 'messaging'
-        self.consumerTag = 'abstractThrower.%s' % str(uuid.uuid4())
+        self.consumerTag = 'abstractThrower'
         self.routingKey = 'abstract_thrower.*'
         self.queueName = 'abstract_thrower'
         self.callback = self.throwing_callback
@@ -91,7 +91,8 @@ class Thrower(Service):
         self.log = logging.getLogger(self.log_category)
         if len(self.log.handlers) != 1:
             self.log.setLevel(self.config.log_level)
-            handler = logging.FileHandler(filename=self.config.log_file)
+            handler = TimedRotatingFileHandler(filename=self.config.log_file, 
+                when = self.config.log_rotate)
             formatter = logging.Formatter(self.config.log_format, self.config.log_date_format)
             handler.setFormatter(formatter)
             self.log.addHandler(handler)
@@ -112,7 +113,7 @@ class Thrower(Service):
         # Declare exchange, queue and start consuming to self.callback
         yield self.amqpBroker.chan.exchange_declare(exchange = self.exchangeName, 
                                                     type='topic')
-        yield self.amqpBroker.named_queue_declare(queue = self.queueName)
+        yield self.amqpBroker.named_queue_declare(queue = self.queueName, exclusive = True, auto_delete = True)
         yield self.amqpBroker.chan.queue_bind(queue = self.queueName, 
                                               exchange = self.exchangeName, 
                                               routing_key = self.routingKey)
@@ -162,7 +163,7 @@ class deliverSmThrower(Thrower):
 
         self.log_category = "jasmin-deliversm-thrower"
         self.exchangeName = 'messaging'
-        self.consumerTag = 'deliverSmThrower.%s' % str(uuid.uuid4())
+        self.consumerTag = 'deliverSmThrower'
         self.routingKey = 'deliver_sm_thrower.*'
         self.queueName = 'deliver_sm_thrower'
         
@@ -200,21 +201,22 @@ class deliverSmThrower(Thrower):
             encodedArgs = urllib.urlencode(args)
             postdata = None
             baseurl = dc.baseurl
-            if dc.method == 'GET':
+            _method = dc.method.upper()
+            if _method == 'GET':
                 baseurl += '?%s' % encodedArgs
             else:
                 postdata = encodedArgs
 
-            self.log.debug('Calling %s with args %s using %s method.' % (dc.baseurl, args, dc.method))
-            content = yield getPage(baseurl, method = dc.method, postdata = postdata, 
+            self.log.debug('Calling %s with args %s using %s method.' % (dc.baseurl, args, _method))
+            content = yield getPage(baseurl, method = _method, postdata = postdata, 
                           timeout = self.config.timeout, agent = 'Jasmin gateway/1.0 deliverSmHttpThrower',
                           headers = {'Content-Type'     : 'application/x-www-form-urlencoded',
                                      'Accept'           : 'text/plain'})
             self.log.info('Throwed message [msgid:%s] to connector [cid:%s] using http to %s.' % (msgid, dc.cid, dc.baseurl))
             
-            self.log.debug('Destination end replied to message [msgid:%s]: %s' % (msgid, content))
+            self.log.debug('Destination end replied to message [msgid:%s]: %r' % (msgid, content))
             # Check for acknowledgement
-            if content != 'ACK/Jasmin':
+            if content.strip() != 'ACK/Jasmin':
                 raise MessageAcknowledgementError('Destination end did not acknowledge receipt of the message.')
 
             yield self.ackMessage(message)
@@ -361,9 +363,9 @@ class DLRThrower(Thrower):
                                      'Accept'           : 'text/plain'})
             self.log.info('Throwed DLR [msgid:%s] to %s.' % (msgid, baseurl))
             
-            self.log.debug('Destination end replied to message [msgid:%s]: %s' % (msgid, content))
+            self.log.debug('Destination end replied to message [msgid:%s]: %r' % (msgid, content))
             # Check for acknowledgement
-            if content != 'ACK/Jasmin':
+            if content.strip() != 'ACK/Jasmin':
                 raise MessageAcknowledgementError('Destination end did not acknowledge receipt of the DLR message.')
 
             # Everything is okay ? then:

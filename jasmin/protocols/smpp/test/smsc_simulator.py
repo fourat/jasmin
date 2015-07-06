@@ -4,6 +4,17 @@ import random
 
 LOG_CATEGORY="jasmin.smpp.tests.smsc_simulator"
 
+message_state_map = {
+    'ACCEPTD':                  MessageState.ACCEPTED,
+    'UNDELIV':                  MessageState.UNDELIVERABLE,
+    'REJECTD':                  MessageState.REJECTED,
+    'DELIVRD':                  MessageState.DELIVERED,
+    'EXPIRED':                  MessageState.EXPIRED,
+    'DELETED':                  MessageState.DELETED,
+    'ACCEPTD':                  MessageState.ACCEPTED,
+    'UNKNOWN':                  MessageState.UNKNOWN,
+}
+
 class NoSubmitSmWhenReceiverIsBoundSMSC(HappySMSC):
     
     def handleSubmit(self, reqPDU):
@@ -78,6 +89,8 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
 
     def __init__(self):
         HappySMSC.__init__(self)
+
+        self.nextResponseMsgId = None
         
     def sendSuccessResponse(self, reqPDU):
         if str(reqPDU.commandId)[:5] == 'bind_':
@@ -86,7 +99,16 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
         HappySMSC.sendSuccessResponse(self, reqPDU)
 
     def sendSubmitSmResponse(self, reqPDU):
-        self.lastSubmitSmRestPDU = reqPDU.requireAck(reqPDU.seqNum, status=CommandStatus.ESME_ROK, message_id = str(random.randint(10000000, 9999999999)))
+        if self.nextResponseMsgId is None:
+            msgid = str(random.randint(10000000, 9999999999))
+        else:
+            msgid = str(self.nextResponseMsgId)
+            self.nextResponseMsgId = None
+
+        self.lastSubmitSmRestPDU = reqPDU.requireAck(reqPDU.seqNum, 
+            status=CommandStatus.ESME_ROK, 
+            message_id = msgid,
+            )
         self.sendPDU(self.lastSubmitSmRestPDU)
 
     def handleSubmit(self, reqPDU):
@@ -97,6 +119,9 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
         self.submitRecords.append(reqPDU)
 
     def trigger_deliver_sm(self, pdu):
+        self.sendPDU(pdu)
+
+    def trigger_data_sm(self, pdu):
         self.sendPDU(pdu)
 
     def trigger_DLR(self, _id = None, pdu_type = 'deliver_sm', stat = 'DELIVRD'):
@@ -112,16 +137,23 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
                 source_addr=self.lastSubmitSmPDU.params['source_addr'],
                 destination_addr=self.lastSubmitSmPDU.params['destination_addr'],
                 short_message='id:%s sub:001 dlvrd:001 submit date:1305050826 done date:1305050826 stat:%s err:000 text:%s' % (
-                            _id,
+                            str(_id),
                             stat,
                             self.lastSubmitSmPDU.params['short_message'][:20]
                             ),
-                message_state=MessageState.DELIVERED,
-                receipted_message_id=self.lastSubmitSmRestPDU.params['message_id'],
+                message_state=message_state_map[stat],
+                receipted_message_id=str(_id),
             )
             self.trigger_deliver_sm(pdu)
         elif pdu_type == 'data_sm':
-            pass
+            # Send back a data_sm with containing a DLR
+            pdu = DataSM(
+                source_addr=self.lastSubmitSmPDU.params['source_addr'],
+                destination_addr=self.lastSubmitSmPDU.params['destination_addr'],
+                message_state=message_state_map[stat],
+                receipted_message_id=str(_id),
+            )
+            self.trigger_data_sm(pdu)
         else:
             raise Exception('Unknown pdu_type (%s) when calling trigger_DLR()' % pdu_type)
 

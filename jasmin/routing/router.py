@@ -1,7 +1,8 @@
 import time
 import logging
 import pickle
-import uuid
+import jasmin
+from logging.handlers import TimedRotatingFileHandler
 from twisted.spread import pb
 from twisted.internet import defer, reactor
 from txamqp.queue import Closed
@@ -24,7 +25,8 @@ class RouterPB(pb.Avatar):
         self.log = logging.getLogger(LOG_CATEGORY)
         if len(self.log.handlers) != 1:
             self.log.setLevel(self.config.log_level)
-            handler = logging.FileHandler(filename=self.config.log_file)
+            handler = TimedRotatingFileHandler(filename=self.config.log_file, 
+                when = self.config.log_rotate)
             formatter = logging.Formatter(self.config.log_format, self.config.log_date_format)
             handler.setFormatter(formatter)
             self.log.addHandler(handler)
@@ -69,10 +71,10 @@ class RouterPB(pb.Avatar):
          
         # Subscribe to deliver.sm.* queues
         yield self.amqpBroker.chan.exchange_declare(exchange='messaging', type='topic')
-        consumerTag = 'RouterPB.%s' % str(uuid.uuid4())
+        consumerTag = 'RouterPB-delivers'
         routingKey = 'deliver.sm.*'
         queueName = 'RouterPB_deliver_sm_all' # A local queue to RouterPB
-        yield self.amqpBroker.named_queue_declare(queue=queueName)
+        yield self.amqpBroker.named_queue_declare(queue=queueName, exclusive = True, auto_delete = True)
         yield self.amqpBroker.chan.queue_bind(queue=queueName, exchange="messaging", routing_key=routingKey)
         yield self.amqpBroker.chan.basic_consume(queue=queueName, no_ack=False, consumer_tag=consumerTag)
         self.deliver_sm_q = yield self.amqpBroker.client.queue(consumerTag)
@@ -81,10 +83,10 @@ class RouterPB(pb.Avatar):
         
         # Subscribe to bill_request.submit_sm_resp.* queues
         yield self.amqpBroker.chan.exchange_declare(exchange='billing', type='topic')
-        consumerTag = 'RouterPB.%s' % str(uuid.uuid4())
+        consumerTag = 'RouterPB-billrequests'
         routingKey = 'bill_request.submit_sm_resp.*'
         queueName = 'RouterPB_bill_request_submit_sm_resp_all' # A local queue to RouterPB
-        yield self.amqpBroker.named_queue_declare(queue=queueName)
+        yield self.amqpBroker.named_queue_declare(queue=queueName, exclusive = True, auto_delete = True)
         yield self.amqpBroker.chan.queue_bind(queue=queueName, exchange="billing", routing_key=routingKey)
         yield self.amqpBroker.chan.basic_consume(queue=queueName, no_ack=False, consumer_tag=consumerTag)
         self.bill_request_submit_sm_resp_q = yield self.amqpBroker.client.queue(consumerTag)
@@ -95,15 +97,12 @@ class RouterPB(pb.Avatar):
                                                                           )
         self.log.info('RouterPB is consuming from routing key: %s', routingKey)
 
-    def rejectAndRequeueMessage(self, message):
-        msgid = message.content.properties['message-id']
-        
-        self.log.debug("Requeuing DeliverSmPDU[%s] without delay" % msgid)
-        return self.amqpBroker.chan.basic_reject(delivery_tag=message.delivery_tag, requeue=1)
+    @defer.inlineCallbacks
     def rejectMessage(self, message):
-        return self.amqpBroker.chan.basic_reject(delivery_tag=message.delivery_tag, requeue=0)
+        yield self.amqpBroker.chan.basic_reject(delivery_tag=message.delivery_tag, requeue=0)
+    @defer.inlineCallbacks
     def ackMessage(self, message):
-        return self.amqpBroker.chan.basic_ack(message.delivery_tag)
+        yield self.amqpBroker.chan.basic_ack(message.delivery_tag)
     
     def activatePersistenceTimer(self):
         if self.persistenceTimer and self.persistenceTimer.active():
@@ -352,7 +351,7 @@ class RouterPB(pb.Avatar):
     
                 fh = open(path,'w')
                 # Write configuration with datetime stamp
-                fh.write('Persisted on %s\n' % time.strftime("%c"))
+                fh.write('Persisted on %s [Jasmin %s]\n' % (time.strftime("%c"), jasmin.get_release()))
                 fh.write(pickle.dumps(self.groups, self.pickleProtocol))
                 fh.close()
 
@@ -366,7 +365,7 @@ class RouterPB(pb.Avatar):
     
                 fh = open(path,'w')
                 # Write configuration with datetime stamp
-                fh.write('Persisted on %s\n' % time.strftime("%c"))
+                fh.write('Persisted on %s [Jasmin %s]\n' % (time.strftime("%c"), jasmin.get_release()))
                 fh.write(pickle.dumps(self.users, self.pickleProtocol))
                 fh.close()
 
@@ -382,7 +381,7 @@ class RouterPB(pb.Avatar):
     
                 fh = open(path,'w')
                 # Write configuration with datetime stamp
-                fh.write('Persisted on %s\n' % time.strftime("%c"))
+                fh.write('Persisted on %s [Jasmin %s]\n' % (time.strftime("%c"), jasmin.get_release()))
                 fh.write(pickle.dumps(self.mo_routing_table, self.pickleProtocol))
                 fh.close()
                 
@@ -396,7 +395,7 @@ class RouterPB(pb.Avatar):
     
                 fh = open(path,'w')
                 # Write configuration with datetime stamp
-                fh.write('Persisted on %s\n' % time.strftime("%c"))
+                fh.write('Persisted on %s [Jasmin %s]\n' % (time.strftime("%c"), jasmin.get_release()))
                 fh.write(pickle.dumps(self.mt_routing_table, self.pickleProtocol))
                 fh.close()
                 
@@ -449,7 +448,7 @@ class RouterPB(pb.Avatar):
                 self.log.info('Removing current Users (%d)' % len(self.users))
                 self.perspective_user_remove_all()
     
-                # Adding new groups
+                # Adding new users
                 self.users = pickle.loads(''.join(lines[1:]))
                 self.log.info('Added new Users (%d)' % len(self.users))
 
@@ -528,7 +527,7 @@ class RouterPB(pb.Avatar):
                 self.users.remove(_user)
 
                 # Save old CnxStatus in new user
-                user.CnxStatus = _user.CnxStatus
+                user.setCnxStatus(_user.getCnxStatus())
                 break 
 
         self.users.append(user)
