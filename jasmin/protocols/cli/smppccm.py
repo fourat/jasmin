@@ -11,7 +11,7 @@ from jasmin.protocols.cli.protocol import str2num
 
 # A config map between console-configuration keys and SMPPClientConfig keys.
 SMPPClientConfigKeyMap = {'cid': 'id', 'host': 'host', 'port': 'port', 'username': 'username',
-                       'password': 'password', 'systype': 'systemType', 'logfile': 'log_file', 'loglevel': 'log_level',
+                       'password': 'password', 'systype': 'systemType', 'logfile': 'log_file', 'loglevel': 'log_level', 'logrotate': 'log_rotate',
                        'bind_to': 'sessionInitTimerSecs', 'elink_interval': 'enquireLinkTimerSecs', 'trx_to': 'inactivityTimerSecs',
                        'res_to': 'responseTimerSecs', 'con_loss_retry': 'reconnectOnConnectionLoss', 'con_fail_retry': 'reconnectOnConnectionFailure',
                        'con_loss_delay': 'reconnectOnConnectionLossDelay', 'con_fail_delay': 'reconnectOnConnectionFailureDelay',
@@ -20,13 +20,13 @@ SMPPClientConfigKeyMap = {'cid': 'id', 'host': 'host', 'port': 'port', 'username
                        'addr_range': 'addressRange', 'src_addr': 'source_addr', 'proto_id': 'protocol_id',
                        'priority': 'priority_flag', 'validity': 'validity_period', 'ripf': 'replace_if_present_flag',
                        'def_msg_id': 'sm_default_msg_id', 'coding': 'data_coding', 'requeue_delay': 'requeue_delay', 
-                       'submit_throughput': 'submit_sm_throughput', 'dlr_expiry': 'dlr_expiry'
+                       'submit_throughput': 'submit_sm_throughput', 'dlr_expiry': 'dlr_expiry', 'dlr_msgid': 'dlr_msg_id_bases'
                        }
 # Keys to be kept in string type, as requested in #64 and #105
 SMPPClientConfigStringKeys = ['systemType', 'username', 'password', 'addressRange']
 
 # When updating a key from RequireRestartKeys, the connector need restart for update to take effect
-RequireRestartKeys = ['host', 'port', 'username', 'password', 'systemType', 'log_file', 'log_level']
+RequireRestartKeys = ['host', 'port', 'username', 'password', 'systemType']
 
 def castOutputToBuiltInType(key, value):
     'Will cast value to the correct type depending on the key'
@@ -84,7 +84,12 @@ class JCliSMPPClientConfig(SMPPClientConfig):
     def getAll(self):
         r = {}
         for key, value in SMPPClientConfigKeyMap.iteritems():
-            r[key] = castOutputToBuiltInType(key, getattr(self, value))
+            if hasattr(self, value):
+                r[key] = castOutputToBuiltInType(key, getattr(self, value))
+            else:
+                # Related to #192
+                r[key] = 'Unknown (object is from an old Jasmin release !)'
+
         return r
 
 def SMPPClientConfigBuild(fCallback):
