@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta
-from jasmin.vendor.smpp.twisted.tests.smsc_simulator import *
-from jasmin.vendor.smpp.pdu.pdu_types import *
 import random
+from datetime import datetime, timedelta
+
+from jasmin.vendor.smpp.pdu.pdu_types import *
+from jasmin.vendor.smpp.twisted.tests.smsc_simulator import *
 
 LOG_CATEGORY="jasmin.smpp.tests.smsc_simulator"
 
@@ -108,6 +109,7 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
     def sendSuccessResponse(self, reqPDU):
         if str(reqPDU.commandId)[:5] == 'bind_':
             self.submitRecords = []
+            self.submitSmRespPDUs = []
 
         HappySMSC.sendSuccessResponse(self, reqPDU)
 
@@ -122,6 +124,7 @@ class ManualDeliveryReceiptHappySMSC(HappySMSC):
             status=CommandStatus.ESME_ROK,
             message_id=msgid,
             )
+        self.submitSmRespPDUs.append(self.lastSubmitSmRestPDU)
         self.sendPDU(self.lastSubmitSmRestPDU)
 
     def handleSubmit(self, reqPDU):
